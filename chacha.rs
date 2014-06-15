@@ -16,14 +16,14 @@
 #![feature(macro_rules)]
 
 extern crate test;
-extern crate libc;
+//extern crate libc;
 
 use std::cast;
 use std::os;
 
 use std::cmp::min;
-use libc::types::common::c95::c_void;
-use libc::funcs::posix88::mman::mlock;
+//use libc::types::common::c95::c_void;
+//use libc::funcs::posix88::mman::mlock;
 
 use test::Bencher;
 
@@ -146,7 +146,7 @@ impl ChaCha {
 	    block: [0, ..16]
 	};
 
-	unsafe {
+	/*unsafe {
 	    if mlock(ctx.state.as_ptr() as *c_void, 64) != 0 {
 		fail!("Error on mlock(): {}", os::last_os_error());
 	    }
@@ -155,6 +155,7 @@ impl ChaCha {
 		fail!("Error on mlock(): {}", os::last_os_error());
 	    }
 	}
+	*/
 
 	chacha_setup(&mut ctx, key, nonce, &constant);
 	chacha_produce_block(&mut ctx);
@@ -163,7 +164,7 @@ impl ChaCha {
     }
 
     // Update with input
-    pub fn process(&mut self, input: &[u8]) -> ~[u8] {
+    pub fn process(&mut self, input: &[u8]) -> Vec<u8> {
 	let stream: &[u8, ..64] = unsafe { cast::transmute(&self.block) };
 
 	let mut offset = 0;
