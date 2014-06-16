@@ -18,7 +18,7 @@
 extern crate test;
 //extern crate libc;
 
-use std::cast;
+use std::mem;
 use std::os;
 
 use std::cmp::min;
@@ -59,6 +59,7 @@ pub struct ChaCha {
     block: [u32, ..16]
 }
 
+#[deriving(Show)]
 pub enum ChaChaError {
     InvalidKeyLength
 }
@@ -102,19 +103,19 @@ fn chacha_setup(
     ctx: &mut ChaCha,
     key: &[u8], nonce: &[u8, ..8], constant: &[u8, ..16]) {
 
-    let c: &[u32, ..4] = unsafe { cast::transmute(constant) };
+    let c: &[u32, ..4] = unsafe { mem::transmute(constant) };
     for n in range(0u, 4) {
 	ctx.state[n] = c[n];
     }
 
     let offset = (key.len() / 4 - 4) as uint;
-    let k: &[u32] = unsafe { cast::transmute(key) };
+    let k: &[u32] = unsafe { mem::transmute(key) };
     for n in range(0u, 4) {
 	ctx.state[n + 4] = k[n];
 	ctx.state[n + 8] = k[n + offset];
     }
 
-    let i: &[u32, ..2] = unsafe { cast::transmute(nonce) };
+    let i: &[u32, ..2] = unsafe { mem::transmute(nonce) };
     for n in range(0u, 2) {
 	ctx.state[n + 14] = i[n];
     }
@@ -164,17 +165,16 @@ impl ChaCha {
     }
 
     // Update with input
-    pub fn process(&mut self, input: &[u8]) -> Vec<u8> {
-	let stream: &[u8, ..64] = unsafe { cast::transmute(&self.block) };
+    pub fn process(&mut self, input: &mut [u8]) {
+	let stream: &[u8, ..64] = unsafe { mem::transmute(&self.block) };
 
 	let mut offset = 0;
-	let mut output = input.to_owned();
 
 	let bytes = input.len();
 	let count = min(bytes, 64 - self.index);
 
 	for i in range(0u, count) {
-	    output[i] = input[i] ^ stream[self.index + i];
+	    input[i] ^= stream[self.index + i];
 	}
 
 	self.index += count;
@@ -186,14 +186,14 @@ impl ChaCha {
 	}
 
 	if count == bytes {
-	    return output;
+	    return;
 	}
 
 	offset += count;
 
 	while bytes - offset > 64 {
 	    for i in range(0u, 64) {
-		output[offset] = input[offset] ^ stream[i];
+		input[offset] ^= stream[i];
 		offset += 1;
 	    }
 
@@ -204,12 +204,11 @@ impl ChaCha {
 	let remaining = bytes - offset;
 
 	for i in range(0u, remaining) {
-	    output[offset] = input[offset] ^ stream[i];
+	    input[offset] ^= stream[i];
 	    offset += 1;
 	}
 
 	self.index = 64 - remaining;
-	return output;
     }
 }
 
@@ -302,7 +301,7 @@ fn chacha20_test_vectors() {
     let nonce4 = [
 	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 
-    let expected4 = [
+    let expected4 = vec!(
 	0xf7, 0x98, 0xa1, 0x89, 0xf1, 0x95, 0xe6, 0x69,
 	0x82, 0x10, 0x5f, 0xfb, 0x64, 0x0b, 0xb7, 0x75,
 	0x7f, 0x57, 0x9d, 0xa3, 0x16, 0x02, 0xfc, 0x93,
@@ -334,23 +333,29 @@ fn chacha20_test_vectors() {
 	0xcc, 0xb2, 0x7d, 0x5a, 0xaa, 0xe0, 0xad, 0x7a,
 	0xd0, 0xf9, 0xd4, 0xb6, 0xad, 0x3b, 0x54, 0x09,
 	0x87, 0x46, 0xd4, 0x52, 0x4d, 0x38, 0x40, 0x7a,
-	0x6d, 0xeb, 0x3a, 0xb7, 0x8f, 0xab, 0x78, 0xc9];
+	0x6d, 0xeb, 0x3a, 0xb7, 0x8f, 0xab, 0x78, 0xc9);
 
     let mut ctx: ChaCha;
+
     ctx = ChaCha::new(key0, &nonce0).unwrap();
-    let output0 = ctx.process([0, ..64]);
+    let mut output0 = [0, ..64];
+    ctx.process(output0);
 
     ctx = ChaCha::new(key1, &nonce1).unwrap();
-    let output1 = ctx.process([0, ..64]);
+    let mut output1 = [0, ..64];
+    ctx.process(output1);
 
     ctx = ChaCha::new(key2, &nonce2).unwrap();
-    let output2 = ctx.process([0, ..60]);
+    let mut output2 = [0, ..60];
+    ctx.process(output2);
 
     ctx = ChaCha::new(key3, &nonce3).unwrap();
-    let output3 = ctx.process([0, ..64]);
+    let mut output3 = [0, ..64];
+    ctx.process(output3);
 
     ctx = ChaCha::new(key4, &nonce4).unwrap();
-    let output4 = ctx.process([0, ..256]);
+    let mut output4 = [0, ..256];
+    ctx.process(output4);
 
     assert_eq!(output0.slice(0, 64), expected0.slice(0, 64));
     assert_eq!(output1.slice(0, 64), expected1.slice(0, 64));
@@ -361,11 +366,12 @@ fn chacha20_test_vectors() {
 
 #[test]
 fn chacha20_basic_test() {
-    let buffer = [0, ..256];
+    let mut buffer = [0, ..256];
     let mut ctx = ChaCha::new([0, ..32], &[0, ..8]).unwrap();
     for i in range(0u, 256) {
-	let output = ctx.process(buffer.slice(0, i as uint));
-	assert_eq!(output.len(), i as uint);
+	let output = buffer.mut_slice(0, i as uint);
+	ctx.process(output);
+	//assert_eq!(output.len(), i as uint);
     }
 }
 
