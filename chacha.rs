@@ -33,6 +33,11 @@ macro_rules! chacha_qround(
 /// TODO: secret storage for block (matrix non-secret?)
 ///
 /// How worthwhile is secret storage? Can we avoid copying?
+/// 
+/// TODO: recast as a straight up (ctr:u64, key) -> block map
+/// anything else is likely to lead to misuse
+/// provide wrapper that does arbitrary-length encoding and 
+/// returns new counter value in tuple (or something equally silly)
 pub struct ChaCha {
     index: uint,
     matrix: [u32, ..16],
