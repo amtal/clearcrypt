@@ -9,6 +9,7 @@ extern crate test;
 use std::mem;
 //use std::os;
 
+use std::num::Bitwise;
 use std::cmp::min;
 //use libc::types::common::c95::c_void;
 //use libc::funcs::posix88::mman::mlock;
@@ -19,26 +20,22 @@ use test::Bencher;
 macro_rules! chacha_qround(
     ($block:expr, $a:expr, $b:expr, $c:expr, $d:expr) => ({
 	$block[$a] += $block[$b];
-	$block[$d] ^= $block[$a];
-	$block[$d] = ($block[$d] << 16) | ($block[$d] >> 16);
+	$block[$d] = ($block[$d] ^ $block[$a]).rotate_left(16);
 	$block[$c] += $block[$d];
-	$block[$b] ^= $block[$c];
-	$block[$b] = ($block[$b] << 12) | ($block[$b] >> 20);
+	$block[$b] = ($block[$b] ^ $block[$c]).rotate_left(12);
 	$block[$a] += $block[$b];
-	$block[$d] ^= $block[$a];
-	$block[$d] = ($block[$d] << 8) | ($block[$d] >> 24);
+	$block[$d] = ($block[$d] ^ $block[$a]).rotate_left(8);
 	$block[$c] += $block[$d];
-	$block[$b] ^= $block[$c];
-	$block[$b] = ($block[$b] << 7) | ($block[$b] >> 25);
+	$block[$b] = ($block[$b] ^ $block[$c]).rotate_left(7);
     });
     )
 
-/// TODO: secret storage for block (state non-secret?)
+/// TODO: secret storage for block (matrix non-secret?)
 ///
 /// How worthwhile is secret storage? Can we avoid copying?
 pub struct ChaCha {
     index: uint,
-    state: [u32, ..16],
+    matrix: [u32, ..16],
     block: [u32, ..16]
 }
 
@@ -50,33 +47,31 @@ pub enum ChaChaError {
 
 
 /// The macro is a cute trick, but won't LLVM optimize inlined to a similar
-/// state?
+/// matrix?
 #[inline]
 fn chacha_produce_block(ctx: &mut ChaCha) {
-    for i in range(0u, 16) {
-	ctx.block[i] = ctx.state[i];
-    }
+    ctx.block = ctx.matrix;
 
     // Ten double rounds are twenty rounds
     for _ in range(0u, 10) {
-	chacha_qround!(ctx.block, 0, 4, 8, 12);
-	chacha_qround!(ctx.block, 1, 5, 9, 13);
+	chacha_qround!(ctx.block, 0, 4,  8, 12);
+	chacha_qround!(ctx.block, 1, 5,  9, 13);
 	chacha_qround!(ctx.block, 2, 6, 10, 14);
 	chacha_qround!(ctx.block, 3, 7, 11, 15);
 	chacha_qround!(ctx.block, 0, 5, 10, 15);
 	chacha_qround!(ctx.block, 1, 6, 11, 12);
-	chacha_qround!(ctx.block, 2, 7, 8, 13);
-	chacha_qround!(ctx.block, 3, 4, 9, 14);
+	chacha_qround!(ctx.block, 2, 7,  8, 13);
+	chacha_qround!(ctx.block, 3, 4,  9, 14);
     }
 
     for i in range(0u, 16) {
-	ctx.block[i] += ctx.state[i];
+	ctx.block[i] += ctx.matrix[i];
     }
 }
 
 /// Method functions
 impl ChaCha {
-    /// Initialize context
+    /// 16 or 32 byte key
     pub fn new(key: &[u8], nonce: &[u8, ..8]) -> Result<ChaCha, ChaChaError> {
 	let constant = match key.len() {
 	    16 => 
@@ -89,13 +84,13 @@ impl ChaCha {
 	};
 
 	let mut ctx = ChaCha {
-	    index: 0,
-	    state: [0, ..16],
-	    block: [0, ..16]
+	    index: 0, // index into 64-byte block
+	    matrix: [0, ..16], // internal cipher matrix + offset
+	    block: [0, ..16] // scratch space for building block
 	};
 
 	/*unsafe {
-	    if mlock(ctx.state.as_ptr() as *c_void, 64) != 0 {
+	    if mlock(ctx.matrix.as_ptr() as *c_void, 64) != 0 {
 		fail!("Error on mlock(): {}", os::last_os_error());
 	    }
 
@@ -105,88 +100,91 @@ impl ChaCha {
 	}
 	*/
 
-	ChaCha::setup(&mut ctx.state, key, nonce, &constant);
+	ChaCha::setup(&mut ctx.matrix, key, nonce, &constant);
 	chacha_produce_block(&mut ctx);
 
 	return Ok(ctx);
     }
 
     #[inline]
-    fn setup(state: &mut [u32, ..16], 
+    fn setup(matrix: &mut [u32, ..16], 
 	     key: &[u8], nonce: &[u8, ..8], constant: &[u8, ..16]) {
 
 	let c: &[u32, ..4] = unsafe { mem::transmute(constant) };
+
 	for n in range(0u, 4) {
-	    state[n] = c[n];
+	    matrix[n] = c[n];
 	}
 
 	let offset = (key.len() / 4 - 4) as uint;
 	let k: &[u32] = unsafe { mem::transmute(key) };
 	for n in range(0u, 4) {
-	    state[n + 4] = k[n];
-	    state[n + 8] = k[n + offset];
+	    matrix[n + 4] = k[n];
+	    matrix[n + 8] = k[n + offset];
 	}
 
 	let i: &[u32, ..2] = unsafe { mem::transmute(nonce) };
 	for n in range(0u, 2) {
-	    state[n + 14] = i[n];
+	    matrix[n + 14] = i[n];
 	}
 
-	state[12] = 0;
-	state[13] = 0;
+	matrix[12] = 0;
+	matrix[13] = 0;
     }
 
 
-    /// Update state
     #[inline]
-    fn update_state(state: &mut [u32, ..16]) {
-	state[12] += 1;
-	if state[12] == 0 {
-	    state[13] += 1;
+    fn update_matrix(matrix: &mut [u32, ..16]) {
+	matrix[12] += 1;
+	if matrix[12] == 0 {
+	    matrix[13] += 1;
 	}
     }
 
-    /// Update with input
-    pub fn process(&mut self, input: &mut [u8]) {
+    /// Update mutable buffer
+    pub fn process(&mut self, buf: &mut [u8]) {
+	// apply existing block
+	
+	// this use of transmute should only work on little-endian archs :\
 	let stream: &[u8, ..64] = unsafe { mem::transmute(&self.block) };
-
-	let mut offset = 0;
-
-	let bytes = input.len();
-	let count = min(bytes, 64 - self.index);
+	let count = min(buf.len(), 64 - self.index); // stream len available
 
 	for i in range(0u, count) {
-	    input[i] ^= stream[self.index + i];
+	    buf[i] ^= stream[self.index + i];
 	}
 
+	// move forward, generate block if needed
 	self.index += count;
 	self.index &= 0x3F;
 
-	if self.index == 0 {
-	    ChaCha::update_state(&mut self.state);
+	if self.index == 0 { // overflow into next block
+	    ChaCha::update_matrix(&mut self.matrix);
 	    chacha_produce_block(self);
 	}
 
-	if count == bytes {
-	    return;
+	if count == buf.len() {
+	    return; // finished
 	}
+
+	// need to generate additional blocks
+	let mut offset = 0; // offset into input buf
 
 	offset += count;
 
-	while bytes - offset > 64 {
+	while buf.len() - offset > 64 { // blockwise loop
 	    for i in range(0u, 64) {
-		input[offset] ^= stream[i];
+		buf[offset] ^= stream[i];
 		offset += 1;
 	    }
 
-	    ChaCha::update_state(&mut self.state);
+	    ChaCha::update_matrix(&mut self.matrix);
 	    chacha_produce_block(self);
 	}
 
-	let remaining = bytes - offset;
+	let remaining = buf.len() - offset;
 
 	for i in range(0u, remaining) {
-	    input[offset] ^= stream[i];
+	    buf[offset] ^= stream[i];
 	    offset += 1;
 	}
 
@@ -195,10 +193,14 @@ impl ChaCha {
 }
 
 impl Drop for ChaCha {
+    /// Should volatile_set_memory the sensitive bits.
+    ///
+    /// TODO: check size :p
     fn drop(&mut self) {
 	unsafe {
-	    std::intrinsics::volatile_set_memory(self.state.as_mut_ptr(), 0, 16);
-	    std::intrinsics::volatile_set_memory(self.block.as_mut_ptr(), 0, 16);
+	    use bzero = std::intrinsics::volatile_set_memory;
+	    bzero(self.matrix.as_mut_ptr(), 0, 16);
+	    bzero(self.block.as_mut_ptr(), 0, 16); 
 	}
     }
 }
@@ -352,10 +354,6 @@ fn chacha20_basic_test() {
 	//assert_eq!(output.len(), i as uint);
     }
 }
-
-//------------
-// Benchmarks
-//------------
 
 #[bench]
 fn chacha20_process_16_kibs(bench: &mut test::Bencher) {
