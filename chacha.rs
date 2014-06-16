@@ -1,25 +1,13 @@
-// Copyright (c) 2014, Cedric Staub <cs.staub@cssx.cc>
-//
-// Permission to use, copy, modify, and distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-#![feature(asm)]
 #![feature(macro_rules)]
+
+/// Interface mockup.
+
 
 extern crate test;
 //extern crate libc;
 
 use std::mem;
-use std::os;
+//use std::os;
 
 use std::cmp::min;
 //use libc::types::common::c95::c_void;
@@ -27,11 +15,7 @@ use std::cmp::min;
 
 use test::Bencher;
 
-//--------
-// Macros
-//--------
-
-// Quarter round
+/// Quarter round
 macro_rules! chacha_qround(
     ($block:expr, $a:expr, $b:expr, $c:expr, $d:expr) => ({
 	$block[$a] += $block[$b];
@@ -49,31 +33,24 @@ macro_rules! chacha_qround(
     });
     )
 
-//---------------------
-// Main implementation
-//---------------------
-
+/// TODO: secret storage for block (state non-secret?)
+///
+/// How worthwhile is secret storage? Can we avoid copying?
 pub struct ChaCha {
     index: uint,
     state: [u32, ..16],
     block: [u32, ..16]
 }
 
+/// Are there any others?
 #[deriving(Show)]
 pub enum ChaChaError {
     InvalidKeyLength
 }
 
-// Update state
-#[inline]
-fn chacha_update_state(ctx: &mut ChaCha) {
-    ctx.state[12] += 1;
-    if ctx.state[12] == 0 {
-	ctx.state[13] += 1;
-    }
-}
 
-// Produce an output block
+/// The macro is a cute trick, but won't LLVM optimize inlined to a similar
+/// state?
 #[inline]
 fn chacha_produce_block(ctx: &mut ChaCha) {
     for i in range(0u, 16) {
@@ -97,49 +74,19 @@ fn chacha_produce_block(ctx: &mut ChaCha) {
     }
 }
 
-// Set up state
-#[inline]
-fn chacha_setup(
-    ctx: &mut ChaCha,
-    key: &[u8], nonce: &[u8, ..8], constant: &[u8, ..16]) {
-
-    let c: &[u32, ..4] = unsafe { mem::transmute(constant) };
-    for n in range(0u, 4) {
-	ctx.state[n] = c[n];
-    }
-
-    let offset = (key.len() / 4 - 4) as uint;
-    let k: &[u32] = unsafe { mem::transmute(key) };
-    for n in range(0u, 4) {
-	ctx.state[n + 4] = k[n];
-	ctx.state[n + 8] = k[n + offset];
-    }
-
-    let i: &[u32, ..2] = unsafe { mem::transmute(nonce) };
-    for n in range(0u, 2) {
-	ctx.state[n + 14] = i[n];
-    }
-
-    ctx.state[12] = 0;
-    ctx.state[13] = 0;
-}
-
-// Method functions
+/// Method functions
 impl ChaCha {
-    // Initialize context
+    /// Initialize context
     pub fn new(key: &[u8], nonce: &[u8, ..8]) -> Result<ChaCha, ChaChaError> {
-	if key.len() != 16 && key.len() != 32 {
-	    return Err(InvalidKeyLength);
-	}
-
-	let constant =
-	    if key.len() == 16 {
+	let constant = match key.len() {
+	    16 => 
 		[0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x31,
-		0x36, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]
-	    } else {
+		0x36, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b],
+	    32 => 
 		[0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x33,
-		0x32, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]
-	    };
+		0x32, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b],
+	    _ => return Err(InvalidKeyLength),
+	};
 
 	let mut ctx = ChaCha {
 	    index: 0,
@@ -158,13 +105,48 @@ impl ChaCha {
 	}
 	*/
 
-	chacha_setup(&mut ctx, key, nonce, &constant);
+	ChaCha::setup(&mut ctx.state, key, nonce, &constant);
 	chacha_produce_block(&mut ctx);
 
 	return Ok(ctx);
     }
 
-    // Update with input
+    #[inline]
+    fn setup(state: &mut [u32, ..16], 
+	     key: &[u8], nonce: &[u8, ..8], constant: &[u8, ..16]) {
+
+	let c: &[u32, ..4] = unsafe { mem::transmute(constant) };
+	for n in range(0u, 4) {
+	    state[n] = c[n];
+	}
+
+	let offset = (key.len() / 4 - 4) as uint;
+	let k: &[u32] = unsafe { mem::transmute(key) };
+	for n in range(0u, 4) {
+	    state[n + 4] = k[n];
+	    state[n + 8] = k[n + offset];
+	}
+
+	let i: &[u32, ..2] = unsafe { mem::transmute(nonce) };
+	for n in range(0u, 2) {
+	    state[n + 14] = i[n];
+	}
+
+	state[12] = 0;
+	state[13] = 0;
+    }
+
+
+    /// Update state
+    #[inline]
+    fn update_state(state: &mut [u32, ..16]) {
+	state[12] += 1;
+	if state[12] == 0 {
+	    state[13] += 1;
+	}
+    }
+
+    /// Update with input
     pub fn process(&mut self, input: &mut [u8]) {
 	let stream: &[u8, ..64] = unsafe { mem::transmute(&self.block) };
 
@@ -181,7 +163,7 @@ impl ChaCha {
 	self.index &= 0x3F;
 
 	if self.index == 0 {
-	    chacha_update_state(self);
+	    ChaCha::update_state(&mut self.state);
 	    chacha_produce_block(self);
 	}
 
@@ -197,7 +179,7 @@ impl ChaCha {
 		offset += 1;
 	    }
 
-	    chacha_update_state(self);
+	    ChaCha::update_state(&mut self.state);
 	    chacha_produce_block(self);
 	}
 
@@ -214,16 +196,12 @@ impl ChaCha {
 
 impl Drop for ChaCha {
     fn drop(&mut self) {
-	for i in range(0u, 16) {
-	    self.state[i] = 0;
-	    self.block[i] = 0;
+	unsafe {
+	    std::intrinsics::volatile_set_memory(self.state.as_mut_ptr(), 0, 16);
+	    std::intrinsics::volatile_set_memory(self.block.as_mut_ptr(), 0, 16);
 	}
     }
 }
-
-//-------
-// Tests
-//-------
 
 #[test]
 fn chacha20_test_vectors() {
